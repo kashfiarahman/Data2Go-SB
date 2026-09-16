@@ -174,6 +174,7 @@ fmt_pct <- function(x) {
 }
 
 
+# Rounds to the nearest $100 -- used for median personal earnings (MPE)
 fmt_dollars <- function(x) {
   
   if (
@@ -185,6 +186,26 @@ fmt_dollars <- function(x) {
   
   formatC(
     round(as.numeric(x) / 100) * 100,
+    format = "f",
+    big.mark = ",",
+    digits = 0
+  )
+}
+
+
+# Rounds to the nearest $10 -- used for median rent
+# e.g. 1816 -> 1820
+fmt_dollars_10 <- function(x) {
+  
+  if (
+    length(x) == 0 ||
+    is.na(x)
+  ) {
+    return(NA_character_)
+  }
+  
+  formatC(
+    round(as.numeric(x) / 10) * 10,
     format = "f",
     big.mark = ",",
     digits = 0
@@ -622,6 +643,9 @@ vars <- list(
   median_personal_earnings =
     "median_personal_earnings_place",
   
+  median_rent =
+    "median_rent_place",
+  
   native =
     "native_place",
   
@@ -650,6 +674,13 @@ county_vars <- list(
   
   median_personal_earnings =
     "median_personal_earnings_county",
+  
+  # ASSUMPTION: following the same _place / _county naming pattern as
+  # every other variable. If this is not the real column name in your
+  # County sheet, the "Missing County variables" stop() below will name
+  # exactly what it expected -- update this line to match.
+  median_rent =
+    "median_rent_county",
   
   native =
     "native_county",
@@ -884,6 +915,21 @@ earnings_q <- quantile(
 )
 
 
+rent_q <- quantile(
+  
+  summary_place[[
+    vars$median_rent
+  ]],
+  
+  probs = c(
+    0.25,
+    0.75
+  ),
+  
+  na.rm = TRUE
+)
+
+
 native_place_sd <- sd(
   
   summary_place[[
@@ -951,6 +997,59 @@ summary_place <-
           vars$median_personal_earnings
         ]] >=
           earnings_q[[2]] ~
+          "placing it in the top quarter countywide",
+        
+        
+        TRUE ~ NA_character_
+        
+      ),
+    
+    
+    rent_comparison =
+      case_when(
+        
+        is.na(
+          .data[[
+            vars$median_rent
+          ]]
+        ) ~ NA_character_,
+        
+        
+        .data[[
+          vars$median_rent
+        ]] ==
+          min(
+            .data[[
+              vars$median_rent
+            ]],
+            na.rm = TRUE
+          ) ~
+          "the lowest among Santa Barbara County places",
+        
+        
+        .data[[
+          vars$median_rent
+        ]] ==
+          max(
+            .data[[
+              vars$median_rent
+            ]],
+            na.rm = TRUE
+          ) ~
+          "the highest among Santa Barbara County places",
+        
+        
+        .data[[
+          vars$median_rent
+        ]] <=
+          rent_q[[1]] ~
+          "placing it in the bottom quarter countywide",
+        
+        
+        .data[[
+          vars$median_rent
+        ]] >=
+          rent_q[[2]] ~
           "placing it in the top quarter countywide",
         
         
@@ -1078,8 +1177,6 @@ if (has_life_expectancy) {
 }
 
 
-
-# Generate full paragraph 
 
 # Generate full paragraph 
 
@@ -1291,6 +1388,53 @@ generate_place_summary <- function(
   
   
   
+  # Rent sentence
+  
+  rent_value <-
+    x[[
+      vars$median_rent
+    ]][[1]]
+  
+  
+  rent_compare <-
+    x$rent_comparison[[1]]
+  
+  
+  rent_sentence <-
+    if (is.na(rent_value)) {
+      
+      ""
+      
+    } else {
+      
+      paste0(
+        
+        "Median rent is $",
+        
+        fmt_dollars_10(
+          rent_value
+        ),
+        
+        if (!is.na(rent_compare)) {
+          
+          paste0(
+            ", ",
+            rent_compare,
+            ". "
+          )
+          
+        } else {
+          
+          ". "
+          
+        }
+        
+      )
+      
+    }
+  
+  
+  
   # Race/ethnicity sentence
   
   race_values <- c(
@@ -1410,6 +1554,7 @@ generate_place_summary <- function(
       life_sentence != "",
       education_sentence != "",
       earnings_sentence != "",
+      rent_sentence != "",
       race_sentence != "",
       native_sentence != ""
     )
@@ -1425,6 +1570,8 @@ generate_place_summary <- function(
       education_sentence,
       
       earnings_sentence,
+      
+      rent_sentence,
       
       race_sentence,
       
@@ -1470,6 +1617,7 @@ generate_place_summary <- function(
   )
   
 }
+
 
 # Generate descriptions for every NUCLEUS place 
 
