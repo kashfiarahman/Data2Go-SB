@@ -1,0 +1,1636 @@
+---
+title: "SB Cottage Geography Descriptions"
+author: "Kashfia Rahman"
+output:
+  html_document: default
+  word_document: default
+---
+
+# Libraries
+
+library(conflicted)
+library(dplyr)
+library(tidyr)
+library(openxlsx)
+library(purrr)
+library(stringr)
+library(readr)
+library(tibble)
+
+conflict_prefer("filter", "dplyr")
+conflict_prefer("select", "dplyr")
+conflict_prefer("lag", "dplyr")
+
+
+# Configuration setup 
+
+# TRUE = use Excel files saved locally in the working directory
+# FALSE = download/read the files directly from Dropbox
+USE_LOCAL <- TRUE
+
+
+# Dropbox files
+# change to dl=1 to allow the workbook to be downloaded/read directly
+
+NUCLEUS_URL <- paste0(
+  "https://www.dropbox.com/scl/fi/",
+  "ulvwdd3d2gjxlide1ycty/",
+  "Santa-Barbara-Flatfile-NUCLEUS.xlsx",
+  "?rlkey=q9jcfhvkz6k2s6cwe14xf5b4s",
+  "&st=y9m4g422",
+  "&dl=1"
+)
+
+CITY_DESCRIPTIONS_URL <- paste0(
+  "https://www.dropbox.com/scl/fi/",
+  "4le0kms1rpq0mktioggx9/",
+  "City-Descriptions-for-City-Explorer.xlsx",
+  "?rlkey=9qi45bq41nkqnziix2q3rfzc9",
+  "&st=4naftwcb",
+  "&dl=1"
+)
+
+
+# Local paths
+# Must match the filenames in working directory exactly.
+
+LOCAL_NUCLEUS_PATH <- "/Users/rahman/Documents/Santa Barbara Flatfile NUCLEUS.xlsx"
+
+LOCAL_CITY_DESCRIPTIONS_PATH <-
+  "/Users/rahman/Documents/City Descriptions for City Explorer.xlsx"
+
+
+# Workbook sheet names
+
+COUNTY_SHEET <- "County"
+
+PLACE_SHEET <- "Place"
+
+CITY_DESCRIPTIONS_SHEET <- "CDP Descriptions"
+
+
+# Output file
+
+OUTPUT_PATH <- "SB_place_descriptions_2026-09-15.csv"
+
+
+
+# Helpful functions 
+
+as_dropbox_download <- function(url) {
+  
+  if (is.na(url) || url == "") {
+    return(url)
+  }
+  
+  if (str_detect(url, "dl=0")) {
+    return(
+      str_replace(
+        url,
+        "dl=0",
+        "dl=1"
+      )
+    )
+  }
+  
+  if (!str_detect(url, "dl=1")) {
+    
+    separator <- ifelse(
+      str_detect(url, "\\?"),
+      "&",
+      "?"
+    )
+    
+    return(
+      paste0(
+        url,
+        separator,
+        "dl=1"
+      )
+    )
+  }
+  
+  url
+}
+
+
+blank_if_missing <- function(x) {
+  
+  x <- as.character(x)
+  
+  x[is.na(x)] <- ""
+  
+  x
+}
+
+
+find_col <- function(
+    df,
+    candidates,
+    required = TRUE
+) {
+  
+  hit <- candidates[
+    candidates %in% names(df)
+  ]
+  
+  if (length(hit) > 0) {
+    return(hit[[1]])
+  }
+  
+  if (required) {
+    
+    stop(
+      "None of these expected columns were found: ",
+      paste(
+        candidates,
+        collapse = ", "
+      ),
+      call. = FALSE
+    )
+  }
+  
+  NA_character_
+}
+
+
+fmt_pct <- function(x) {
+  
+  if (
+    length(x) == 0 ||
+    is.na(x)
+  ) {
+    return(NA_character_)
+  }
+  
+  formatC(
+    round(
+      as.numeric(x),
+      1
+    ),
+    format = "f",
+    digits = 1
+  )
+}
+
+
+fmt_dollars <- function(x) {
+  
+  if (
+    length(x) == 0 ||
+    is.na(x)
+  ) {
+    return(NA_character_)
+  }
+  
+  formatC(
+    round(as.numeric(x) / 100) * 100,
+    format = "f",
+    big.mark = ",",
+    digits = 0
+  )
+}
+
+
+sentence_if_complete <- function(
+    values,
+    text
+) {
+  
+  if (any(is.na(values))) {
+    return("")
+  }
+  
+  text
+}
+
+
+
+# Load data
+
+if (USE_LOCAL) {
+  
+  nucleus_source <-
+    LOCAL_NUCLEUS_PATH
+  
+  descriptions_source <-
+    LOCAL_CITY_DESCRIPTIONS_PATH
+  
+  
+  # Stop if the NUCLEUS file cannot be found.
+  if (!file.exists(nucleus_source)) {
+    
+    stop(
+      "Local NUCLEUS file not found: ",
+      nucleus_source,
+      "\nCurrent working directory: ",
+      getwd(),
+      call. = FALSE
+    )
+  }
+  
+  
+  # City Descriptions
+  if (!file.exists(descriptions_source)) {
+    
+    message(
+      "Local City Descriptions file not found: ",
+      descriptions_source,
+      "Opening descriptions will be blank"
+    )
+  }
+  
+  
+} else {
+  
+  nucleus_source <-
+    as_dropbox_download(
+      NUCLEUS_URL
+    )
+  
+  descriptions_source <-
+    as_dropbox_download(
+      CITY_DESCRIPTIONS_URL
+    )
+}
+
+
+
+# Read NUCLEUS Place data
+
+places_raw <- read.xlsx(
+  nucleus_source,
+  sheet = PLACE_SHEET,
+  colNames = TRUE,
+  detectDates = TRUE
+)
+
+
+# Read NUCLEUS County data
+
+county_raw <- read.xlsx(
+  nucleus_source,
+  sheet = COUNTY_SHEET,
+  colNames = TRUE,
+  detectDates = TRUE
+)
+
+
+
+# Read City Descriptions
+# NOTE: check.names = FALSE keeps original headers like "1st Sentence"
+# intact. Without it, openxlsx silently rewrites the header to
+# "1st.Sentence" (spaces become dots), which breaks column lookups
+# downstream.
+
+if (
+  USE_LOCAL &&
+  !file.exists(descriptions_source)
+) {
+  
+  city_descriptions <- NULL
+  
+} else {
+  
+  city_descriptions <- read.xlsx(
+    descriptions_source,
+    sheet = CITY_DESCRIPTIONS_SHEET,
+    colNames = TRUE,
+    detectDates = TRUE,
+    check.names = FALSE
+  )
+  
+}
+
+
+
+# Diagnostic info if helpful
+
+message(
+  "Loaded Place sheet with ",
+  nrow(places_raw),
+  " rows."
+)
+
+message(
+  "Loaded County sheet with ",
+  nrow(county_raw),
+  " rows."
+)
+
+message(
+  "NUCLEUS Place columns:"
+)
+
+print(
+  names(places_raw)
+)
+
+
+if (!is.null(city_descriptions)) {
+  
+  message(
+    "Loaded City Descriptions sheet with ",
+    nrow(city_descriptions),
+    " rows."
+  )
+  
+  message(
+    "City Descriptions columns:"
+  )
+  
+  print(
+    names(city_descriptions)
+  )
+}
+
+
+
+# Geography list from NUCLEUS
+
+geo_id_col <- find_col(
+  places_raw,
+  c(
+    "GEO_ID",
+    "geo_id",
+    "Geo_ID"
+  )
+)
+
+
+geo_label_col <- find_col(
+  places_raw,
+  c(
+    "GEO_LABEL",
+    "Place",
+    "PLACE_NAME",
+    "Geography"
+  )
+)
+
+
+full_name_col <- find_col(
+  places_raw,
+  c(
+    "Full Census Name",
+    "Full_Place_Name",
+    "FULL_PLACE_NAME"
+  ),
+  required = FALSE
+)
+
+
+places <- places_raw %>%
+  
+  transmute(
+    
+    GEO_ID =
+      as.character(
+        .data[[geo_id_col]]
+      ),
+    
+    GEO_LABEL =
+      as.character(
+        .data[[geo_label_col]]
+      ),
+    
+    FULL_PLACE_NAME =
+      if (!is.na(full_name_col)) {
+        
+        as.character(
+          .data[[full_name_col]]
+        )
+        
+      } else {
+        
+        as.character(
+          .data[[geo_label_col]]
+        )
+        
+      }
+    
+  ) %>%
+  
+  filter(
+    !is.na(GEO_ID),
+    GEO_ID != "",
+    !is.na(GEO_LABEL),
+    GEO_LABEL != ""
+  ) %>%
+  
+  distinct(
+    GEO_ID,
+    .keep_all = TRUE
+  )
+
+
+
+# Generate first sentence from City Descriptions 
+
+places_with_opening <- places %>%
+  
+  mutate(
+    OPENING_DESCRIPTION = ""
+  )
+
+
+if (!is.null(city_descriptions)) {
+  
+  
+  # Geography ID, if available
+  desc_geo_id_col <- find_col(
+    city_descriptions,
+    c(
+      "GEO_ID",
+      "geo_id",
+      "Geo_ID",
+      "Geography_ID"
+    ),
+    required = FALSE
+  )
+  
+  
+  # Geography/place-name column
+  # "CDP" is the field used in the City Descriptions workbook
+  desc_geo_label_col <- find_col(
+    city_descriptions,
+    c(
+      "CDP",
+      "GEO_LABEL",
+      "GEO_LABEL (adjusted)",
+      "Place",
+      "PLACE_NAME",
+      "Geography"
+    ),
+    required = FALSE
+  )
+  
+  
+  # Description column
+  # "1st Sentence" is the field used in the City Descriptions workbook.
+  # "1st.Sentence" is included as a fallback in case check.names
+  # mangles the header on some future read (e.g. a different reader
+  # function, or a re-saved copy of the workbook).
+  desc_text_col <- find_col(
+    city_descriptions,
+    c(
+      "1st Sentence",
+      "1st.Sentence",
+      "First_Sentence",
+      "FIRST_SENTENCE",
+      "Sentence_1",
+      "Opening_Description",
+      "Description",
+      "CITY_DESCRIPTION"
+    ),
+    required = FALSE
+  )
+  
+  
+  
+  # Use GEO_ID when it exists in the descriptions file
+  
+  if (
+    !is.na(desc_text_col) &&
+    !is.na(desc_geo_id_col)
+  ) {
+    
+    description_lookup <-
+      city_descriptions %>%
+      
+      transmute(
+        
+        GEO_ID =
+          as.character(
+            .data[[desc_geo_id_col]]
+          ),
+        
+        OPENING_DESCRIPTION =
+          blank_if_missing(
+            .data[[desc_text_col]]
+          )
+        
+      ) %>%
+      
+      distinct(
+        GEO_ID,
+        .keep_all = TRUE
+      )
+    
+    
+    places_with_opening <-
+      places %>%
+      
+      left_join(
+        description_lookup,
+        by = "GEO_ID"
+      ) %>%
+      
+      mutate(
+        OPENING_DESCRIPTION =
+          blank_if_missing(
+            OPENING_DESCRIPTION
+          )
+      )
+    
+    
+    # Otherwise match using place/CDP name
+    
+  } else if (
+    !is.na(desc_text_col) &&
+    !is.na(desc_geo_label_col)
+  ) {
+    
+    description_lookup <-
+      city_descriptions %>%
+      
+      transmute(
+        
+        GEO_LABEL =
+          as.character(
+            .data[[desc_geo_label_col]]
+          ) %>%
+          str_remove(",\\s*California\\s*$") %>%
+          str_remove("\\s+(CDP|city|town)\\s*$") %>%
+          str_trim(),
+        
+        OPENING_DESCRIPTION =
+          blank_if_missing(
+            .data[[desc_text_col]]
+          )
+        
+      ) %>%
+      
+      # Manual name fixes for CDPs that don't line up with NUCLEUS labels
+      mutate(
+        GEO_LABEL =
+          recode(
+            GEO_LABEL,
+            "Vandenberg SFB" = "Vandenberg Space Force Base"
+          )
+      ) %>%
+      
+      distinct(
+        GEO_LABEL,
+        .keep_all = TRUE
+      )
+    
+    
+    places_with_opening <-
+      places %>%
+      
+      left_join(
+        description_lookup,
+        by = "GEO_LABEL"
+      ) %>%
+      
+      mutate(
+        OPENING_DESCRIPTION =
+          blank_if_missing(
+            OPENING_DESCRIPTION
+          )
+      )
+    
+    
+  } else {
+    
+    warning(
+      paste0(
+        "City Descriptions does not contain ",
+        "a recognizable geography field ",
+        "and description field. ",
+        "Opening descriptions were left blank."
+      )
+    )
+    
+  }
+  
+}
+
+
+
+# Map NUCLEUS variables
+
+vars <- list(
+  
+  at_least_hs =
+    "at_least_hs_place",
+  
+  at_least_bachelors =
+    "at_least_bachelors_place",
+  
+  median_personal_earnings =
+    "median_personal_earnings_place",
+  
+  native =
+    "native_place",
+  
+  asian =
+    "asian_api_pop_place",
+  
+  black =
+    "aframer_pop_place",
+  
+  latino =
+    "latino_pop_place",
+  
+  white =
+    "white_pop_place"
+  
+)
+
+
+county_vars <- list(
+  
+  at_least_hs =
+    "at_least_hs_county",
+  
+  at_least_bachelors =
+    "at_least_bachelors_county",
+  
+  median_personal_earnings =
+    "median_personal_earnings_county",
+  
+  native =
+    "native_county",
+  
+  asian =
+    "asian_api_pop_county",
+  
+  black =
+    "aframer_pop_county",
+  
+  latino =
+    "latino_pop_county",
+  
+  white =
+    "white_pop_county"
+  
+)
+
+
+
+# Check required variables
+
+required_place_vars <-
+  unlist(
+    vars,
+    use.names = FALSE
+  )
+
+
+required_county_vars <-
+  unlist(
+    county_vars,
+    use.names = FALSE
+  )
+
+
+missing_place_vars <-
+  setdiff(
+    required_place_vars,
+    names(places_raw)
+  )
+
+
+missing_county_vars <-
+  setdiff(
+    required_county_vars,
+    names(county_raw)
+  )
+
+
+if (
+  length(missing_place_vars) > 0
+) {
+  
+  stop(
+    "Missing Place variables: ",
+    paste(
+      missing_place_vars,
+      collapse = ", "
+    ),
+    call. = FALSE
+  )
+}
+
+
+if (
+  length(missing_county_vars) > 0
+) {
+  
+  stop(
+    "Missing County variables: ",
+    paste(
+      missing_county_vars,
+      collapse = ", "
+    ),
+    call. = FALSE
+  )
+}
+
+
+
+# Life expectancy fields
+
+life_expectancy_place_var <-
+  "life_expectancy_place"
+
+life_expectancy_county_var <-
+  "life_expectancy_county"
+
+
+has_life_expectancy <- all(
+  
+  life_expectancy_place_var %in%
+    names(places_raw),
+  
+  life_expectancy_county_var %in%
+    names(county_raw)
+  
+)
+
+
+
+# Numeric data 
+
+summary_place <-
+  places_raw %>%
+  
+  mutate(
+    
+    GEO_ID =
+      as.character(
+        .data[[geo_id_col]]
+      ),
+    
+    GEO_LABEL =
+      as.character(
+        .data[[geo_label_col]]
+      )
+    
+  ) %>%
+  
+  left_join(
+    
+    places_with_opening %>%
+      
+      select(
+        GEO_ID,
+        FULL_PLACE_NAME,
+        OPENING_DESCRIPTION
+      ),
+    
+    by = "GEO_ID"
+    
+  ) %>%
+  
+  mutate(
+    
+    across(
+      
+      all_of(
+        required_place_vars
+      ),
+      
+      ~ parse_number(
+        as.character(.x)
+      )
+      
+    )
+    
+  )
+
+
+
+county_summary <-
+  county_raw %>%
+  
+  mutate(
+    
+    across(
+      
+      all_of(
+        required_county_vars
+      ),
+      
+      ~ parse_number(
+        as.character(.x)
+      )
+      
+    )
+    
+  ) %>%
+  
+  slice(1)
+
+
+
+# Add life expectancy if present
+
+if (has_life_expectancy) {
+  
+  summary_place <-
+    summary_place %>%
+    
+    mutate(
+      
+      "life_expectancy_place" :=
+        parse_number(
+          as.character(
+            .data[[
+              life_expectancy_place_var
+            ]]
+          )
+        )
+      
+    )
+  
+  
+  county_summary <-
+    county_summary %>%
+    
+    mutate(
+      
+      "life_expectancy_county" :=
+        parse_number(
+          as.character(
+            .data[[
+              life_expectancy_county_var
+            ]]
+          )
+        )
+      
+    )
+  
+}
+
+
+
+# Comparison fields 
+
+earnings_q <- quantile(
+  
+  summary_place[[
+    vars$median_personal_earnings
+  ]],
+  
+  probs = c(
+    0.25,
+    0.75
+  ),
+  
+  na.rm = TRUE
+)
+
+
+native_place_sd <- sd(
+  
+  summary_place[[
+    vars$native
+  ]],
+  
+  na.rm = TRUE
+)
+
+
+county_native <-
+  county_summary[[
+    county_vars$native
+  ]][[1]]
+
+
+
+summary_place <-
+  summary_place %>%
+  
+  mutate(
+    
+    earnings_comparison =
+      case_when(
+        
+        is.na(
+          .data[[
+            vars$median_personal_earnings
+          ]]
+        ) ~ NA_character_,
+        
+        
+        .data[[
+          vars$median_personal_earnings
+        ]] ==
+          min(
+            .data[[
+              vars$median_personal_earnings
+            ]],
+            na.rm = TRUE
+          ) ~
+          "the lowest among Santa Barbara County places",
+        
+        
+        .data[[
+          vars$median_personal_earnings
+        ]] ==
+          max(
+            .data[[
+              vars$median_personal_earnings
+            ]],
+            na.rm = TRUE
+          ) ~
+          "the highest among Santa Barbara County places",
+        
+        
+        .data[[
+          vars$median_personal_earnings
+        ]] <=
+          earnings_q[[1]] ~
+          "placing it in the bottom quarter countywide",
+        
+        
+        .data[[
+          vars$median_personal_earnings
+        ]] >=
+          earnings_q[[2]] ~
+          "placing it in the top quarter countywide",
+        
+        
+        TRUE ~ NA_character_
+        
+      ),
+    
+    
+    native_comparison =
+      case_when(
+        
+        is.na(
+          .data[[
+            vars$native
+          ]]
+        ) ~
+          NA_character_,
+        
+        
+        .data[[
+          vars$native
+        ]] >
+          county_native +
+          native_place_sd ~
+          "A higher-than-average ",
+        
+        
+        .data[[
+          vars$native
+        ]] <
+          county_native -
+          native_place_sd ~
+          "A lower-than-average ",
+        
+        
+        TRUE ~
+          NA_character_
+        
+      )
+    
+  )
+
+
+
+# Life expectancy comparisons
+
+if (has_life_expectancy) {
+  
+  life_q <- quantile(
+    
+    summary_place[[
+      life_expectancy_place_var
+    ]],
+    
+    probs = c(
+      0.25,
+      0.75
+    ),
+    
+    na.rm = TRUE
+  )
+  
+  
+  summary_place <-
+    summary_place %>%
+    
+    mutate(
+      
+      life_expectancy_comparison =
+        case_when(
+          
+          is.na(
+            .data[[
+              life_expectancy_place_var
+            ]]
+          ) ~
+            NA_character_,
+          
+          
+          .data[[
+            life_expectancy_place_var
+          ]] ==
+            min(
+              .data[[
+                life_expectancy_place_var
+              ]],
+              na.rm = TRUE
+            ) ~
+            "the shortest",
+          
+          
+          .data[[
+            life_expectancy_place_var
+          ]] ==
+            max(
+              .data[[
+                life_expectancy_place_var
+              ]],
+              na.rm = TRUE
+            ) ~
+            "the longest",
+          
+          
+          .data[[
+            life_expectancy_place_var
+          ]] <=
+            life_q[[1]] ~
+            "in the bottom quarter of life expectancies",
+          
+          
+          .data[[
+            life_expectancy_place_var
+          ]] >=
+            life_q[[2]] ~
+            "in the top quarter of life expectancies",
+          
+          
+          TRUE ~
+            NA_character_
+          
+        )
+      
+    )
+  
+}
+
+
+
+# Generate full paragraph 
+
+# Generate full paragraph 
+
+generate_place_summary <- function(
+    this_geo_id
+) {
+  
+  x <-
+    summary_place %>%
+    
+    filter(
+      GEO_ID == this_geo_id
+    ) %>%
+    
+    slice(1)
+  
+  
+  if (nrow(x) == 0) {
+    
+    return(
+      
+      tibble(
+        
+        GEO_ID =
+          this_geo_id,
+        
+        GEO_LABEL =
+          "",
+        
+        FULL_PLACE_NAME =
+          "",
+        
+        OPENING_DESCRIPTION =
+          "",
+        
+        Paragraph_Description =
+          ""
+        
+      )
+      
+    )
+    
+  }
+  
+  
+  # Opening description
+  
+  opening <-
+    blank_if_missing(
+      x$OPENING_DESCRIPTION[[1]]
+    ) %>%
+    
+    str_trim()
+  
+  
+  opening_text <-
+    if (opening == "") {
+      
+      ""
+      
+    } else {
+      
+      paste0(
+        opening,
+        " "
+      )
+      
+    }
+  
+  
+  
+  # Life expectancy sentence
+  
+  life_sentence <- ""
+  
+  
+  if (has_life_expectancy) {
+    
+    life_value <-
+      x[[
+        life_expectancy_place_var
+      ]][[1]]
+    
+    
+    life_compare <-
+      x$life_expectancy_comparison[[1]]
+    
+    
+    if (!is.na(life_value)) {
+      
+      life_sentence <-
+        paste0(
+          
+          "Residents live ",
+          fmt_pct(
+            life_value
+          ),
+          " years on average",
+          
+          if (!is.na(life_compare)) {
+            
+            paste0(
+              ", which is ",
+              life_compare,
+              " in the county. "
+            )
+            
+          } else {
+            
+            ". "
+            
+          }
+          
+        )
+      
+    }
+    
+  }
+  
+  
+  
+  # Education sentence
+  
+  education_sentence <-
+    sentence_if_complete(
+      
+      c(
+        
+        x[[
+          vars$at_least_hs
+        ]][[1]],
+        
+        x[[
+          vars$at_least_bachelors
+        ]][[1]]
+        
+      ),
+      
+      paste0(
+        
+        "In terms of educational attainment, ",
+        
+        fmt_pct(
+          x[[
+            vars$at_least_hs
+          ]][[1]]
+        ),
+        
+        " percent of adults have at least a high school diploma and ",
+        
+        fmt_pct(
+          x[[
+            vars$at_least_bachelors
+          ]][[1]]
+        ),
+        
+        " percent hold at least a bachelor's degree. "
+        
+      )
+      
+    )
+  
+  
+  
+  # Earnings sentence
+  
+  earnings_value <-
+    x[[
+      vars$median_personal_earnings
+    ]][[1]]
+  
+  
+  earnings_compare <-
+    x$earnings_comparison[[1]]
+  
+  
+  earnings_sentence <-
+    if (is.na(earnings_value)) {
+      
+      ""
+      
+    } else {
+      
+      paste0(
+        
+        "Median personal earnings are $",
+        
+        fmt_dollars(
+          earnings_value
+        ),
+        
+        if (!is.na(earnings_compare)) {
+          
+          paste0(
+            ", ",
+            earnings_compare,
+            ". "
+          )
+          
+        } else {
+          
+          ". "
+          
+        }
+        
+      )
+      
+    }
+  
+  
+  
+  # Race/ethnicity sentence
+  
+  race_values <- c(
+    
+    x[[
+      vars$asian
+    ]][[1]],
+    
+    x[[
+      vars$black
+    ]][[1]],
+    
+    x[[
+      vars$latino
+    ]][[1]],
+    
+    x[[
+      vars$white
+    ]][[1]]
+    
+  )
+  
+  
+  race_sentence <-
+    sentence_if_complete(
+      
+      race_values,
+      
+      paste0(
+        
+        "In this area, ",
+        
+        fmt_pct(
+          x[[
+            vars$asian
+          ]][[1]]
+        ),
+        
+        " percent of residents are Asian, ",
+        
+        fmt_pct(
+          x[[
+            vars$black
+          ]][[1]]
+        ),
+        
+        " percent are Black, ",
+        
+        fmt_pct(
+          x[[
+            vars$latino
+          ]][[1]]
+        ),
+        
+        " percent are Latino, and ",
+        
+        fmt_pct(
+          x[[
+            vars$white
+          ]][[1]]
+        ),
+        
+        " percent are white. "
+        
+      )
+      
+    )
+  
+  
+  
+  # US-born sentence
+  
+  native_value <-
+    x[[
+      vars$native
+    ]][[1]]
+  
+  
+  native_compare <-
+    x$native_comparison[[1]]
+  
+  
+  native_sentence <-
+    if (
+      is.na(native_value) ||
+      is.na(native_compare)
+    ) {
+      
+      ""
+      
+    } else {
+      
+      paste0(
+        
+        native_compare,
+        
+        fmt_pct(
+          native_value
+        ),
+        
+        " percent of residents were born in the US."
+        
+      )
+      
+    }
+  
+  
+  
+  # Combine sentences
+  
+  data_unavailable_note <-
+    "This area's population is too small to present a summary of the demographic data."
+  
+  
+  has_any_stats <-
+    any(
+      life_sentence != "",
+      education_sentence != "",
+      earnings_sentence != "",
+      race_sentence != "",
+      native_sentence != ""
+    )
+  
+  
+  paragraph_description <-
+    paste0(
+      
+      opening_text,
+      
+      life_sentence,
+      
+      education_sentence,
+      
+      earnings_sentence,
+      
+      race_sentence,
+      
+      native_sentence,
+      
+      if (!has_any_stats) {
+        paste0(data_unavailable_note, " ")
+      } else {
+        ""
+      }
+      
+    ) %>%
+    
+    str_squish()
+  
+  
+  
+  tibble(
+    
+    GEO_ID =
+      as.character(
+        x$GEO_ID[[1]]
+      ),
+    
+    GEO_LABEL =
+      as.character(
+        x$GEO_LABEL[[1]]
+      ),
+    
+    FULL_PLACE_NAME =
+      blank_if_missing(
+        x$FULL_PLACE_NAME[[1]]
+      ),
+    
+    OPENING_DESCRIPTION =
+      blank_if_missing(
+        x$OPENING_DESCRIPTION[[1]]
+      ),
+    
+    Paragraph_Description =
+      paragraph_description
+    
+  )
+  
+}
+
+# Generate descriptions for every NUCLEUS place 
+
+list_of_places <-
+  places %>%
+  
+  pull(
+    GEO_ID
+  ) %>%
+  
+  unique() %>%
+  
+  as.character()
+
+
+place_summaries <-
+  purrr::map_dfr(
+    list_of_places,
+    generate_place_summary
+  )
+
+
+# QCs
+
+expected_geo_ids <-
+  sort(
+    unique(
+      places$GEO_ID
+    )
+  )
+
+
+output_geo_ids <-
+  sort(
+    unique(
+      place_summaries$GEO_ID
+    )
+  )
+
+
+if (
+  !identical(
+    expected_geo_ids,
+    output_geo_ids
+  )
+) {
+  
+  stop(
+    
+    "Geography mismatch after sentence generation. Missing: ",
+    
+    paste(
+      setdiff(
+        expected_geo_ids,
+        output_geo_ids
+      ),
+      collapse = ", "
+    ),
+    
+    "; extra: ",
+    
+    paste(
+      setdiff(
+        output_geo_ids,
+        expected_geo_ids
+      ),
+      collapse = ", "
+    ),
+    
+    call. = FALSE
+    
+  )
+  
+}
+
+
+
+if (
+  anyDuplicated(
+    place_summaries$GEO_ID
+  ) > 0
+) {
+  
+  stop(
+    "Duplicate GEO_ID values found in final output.",
+    call. = FALSE
+  )
+  
+}
+
+
+
+if (
+  nrow(place_summaries) !=
+  nrow(places)
+) {
+  
+  stop(
+    "Final output row count does not match the NUCLEUS place list.",
+    call. = FALSE
+  )
+  
+}
+
+
+
+blank_openings <- sum(
+  
+  is.na(
+    place_summaries$OPENING_DESCRIPTION
+  ) |
+    
+    place_summaries$OPENING_DESCRIPTION == ""
+  
+)
+
+
+message(
+  
+  blank_openings,
+  
+  " NUCLEUS places have no City Descriptions opening sentence; ",
+  "they were kept with a blank opening."
+  
+)
+
+
+
+# Make sure output cannot overwrite an input/sorter file 
+
+if (
+  str_detect(
+    str_to_lower(
+      OUTPUT_PATH
+    ),
+    "sorter|nucleus"
+  )
+) {
+  
+  stop(
+    paste0(
+      "OUTPUT_PATH appears to target a sorter/NUCLEUS file. ",
+      "Use a separate output filename."
+    ),
+    call. = FALSE
+  )
+  
+}
+
+
+
+# Write final CSV 
+
+write_csv(
+  place_summaries,
+  OUTPUT_PATH,
+  na = ""
+)
+
+
+message(
+  "Wrote: ",
+  OUTPUT_PATH
+)
